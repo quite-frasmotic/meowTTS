@@ -1,0 +1,11 @@
+.idea/
+__pycache__/
+indev/
+
+.env
+.DS_Store
+.tio.tokens.json
+
+tokens.db
+tokens.db-shm
+tokens.db-wal
