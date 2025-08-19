@@ -21,7 +21,7 @@ async def generate(user, message):
     selected_voice = VOICE_IDS.get(voice_name or "", DEFAULT_VOICE_ID)
     clean_message = message[match.end() :] if match else message
 
-    audio_stream = client.text_to_speech.stream(
+    tts_audio = client.text_to_speech.convert(
         text=clean_message,
         voice_id=selected_voice,
         model_id="eleven_flash_v2_5",
@@ -29,7 +29,7 @@ async def generate(user, message):
         # optimize_streaming_latency=4
     )
 
-    return audio_stream
+    return tts_audio
 
 
 if __name__ == "__main__":

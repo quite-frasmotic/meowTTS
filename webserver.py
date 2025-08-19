@@ -7,8 +7,9 @@ import json
 import traceback
 import os
 
-from typing import AsyncIterator
 from common import event_bus
+from mutagen.mp3 import MP3
+from io import BytesIO
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from starlette.responses import HTMLResponse
 from starlette.routing import Route, WebSocketRoute, Mount
@@ -28,6 +29,7 @@ HTML_INDEX = """
 ADMIN_USERS = os.environ.get("ADMIN_USERS")
 
 open_sockets: set[WebSocket] = set()
+tts_queue = asyncio.Queue()
 minimum_bits = 10
 
 
@@ -49,6 +51,8 @@ async def websocket_manager(socket: WebSocket):
         pass
     finally:
         open_sockets.discard(socket)
+        print("Lost websocket connection")
+        print(f"Number of open sockets: {len(open_sockets)}")
 
 
 routes = [
@@ -61,15 +65,21 @@ app = Starlette(debug=True, routes=routes)
 app.mount("/", twitchbot.adapter)
 
 
-# Listen for events from common event bus (e.g. from Twitch bot)
 @app.on_event("startup")
-async def consume_events() -> None:
-    async def consumer():
+async def queue_tasks() -> None:
+    # Listen for events from common event bus (e.g. from Twitch bot)
+    async def event_consumer():
         while True:
             event, payload = await event_bus.get()
             await dispatch(event, payload)
 
-    asyncio.create_task(consumer())
+    async def tts_consumer():
+        while True:
+            user, message = await tts_queue.get()
+            await tts_worker(user, message)
+
+    asyncio.create_task(event_consumer())
+    asyncio.create_task(tts_consumer())
 
 
 async def dispatch(event: str, payload) -> None:
@@ -82,21 +92,27 @@ async def dispatch(event: str, payload) -> None:
 
         # TODO: Move this message cleaning to the same bit in tts.py
         clean_message = re.sub(r"\bCheer\d+\b", "", payload.message)
-        await generate_tts(payload.user, clean_message)
+        await tts_queue.put((payload.user, clean_message))
 
     if event == "channel.message" and payload.chatter.name in ADMIN_USERS:
         if "!tts " in payload.text:
-            await generate_tts(payload.chatter.name, payload.text[5:])
+            print("new tts item in queue:")
+            print(tts_queue)
+            await tts_queue.put((payload.chatter.name, payload.text[5:]))
 
 
-async def generate_tts(user: str, message: str) -> None:
-    # TODO: queue system
-    audio_stream = await tts.generate(user, message)
-    # broadcasting = True
-    broadcasting = await stream_mp3(audio_stream, open_sockets)
-    # while broadcasting:
-    # do the stuff etc etc etc and when not broadcasting, let another queue item go
-    #    pass
+async def tts_worker(user, message) -> None:
+    generated_audio = await tts.generate(user, message)
+    chunks: list[bytes] = []
+    async for chunk in generated_audio:
+        if chunk is not None:
+            chunks.append(chunk)
+    await stream_mp3(chunks, open_sockets)
+
+    byte_string = b"".join(chunks)
+    buffer = BytesIO(byte_string)
+    audio_length = MP3(buffer).info.length
+    await asyncio.sleep(audio_length + 3)
 
 
 async def broadcast_text(sockets, text: str):
@@ -137,11 +153,11 @@ JSON_START = json.dumps({"type": "start"})
 JSON_END = json.dumps({"type": "end"})
 
 
-async def stream_mp3(mp3: AsyncIterator[bytes], sockets) -> bool:
+async def stream_mp3(mp3: list[bytes], sockets) -> None:
     print("Starting audio broadcast...")
     try:
         await broadcast_text(sockets, JSON_START)
-        async for chunk in mp3:
+        for chunk in mp3:
             if not isinstance(chunk, bytes):
                 continue
 
@@ -157,7 +173,6 @@ async def stream_mp3(mp3: AsyncIterator[bytes], sockets) -> bool:
         print(traceback.format_exc())
 
     print("Broadcast finished")
-    return False
 
 
 async def main():
