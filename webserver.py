@@ -17,15 +17,9 @@ from starlette.applications import Starlette
 from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 
-HTML_INDEX = """
-<!doctype html>
-<head><title>meowTTS Browser Source</title>
-</head>
-<body>
-<audio id="player"></audio>
-<script src="/static/app.js?v=15"></script>
-</body>
-"""
+with open("index.html", "r") as html_file:
+    HTML_INDEX = html_file.read()
+
 ADMIN_USERS = os.environ.get("ADMIN_USERS")
 
 open_sockets: set[WebSocket] = set()
@@ -107,12 +101,12 @@ async def tts_worker(user, message) -> None:
     async for chunk in generated_audio:
         if chunk is not None:
             chunks.append(chunk)
-    await stream_mp3(chunks, open_sockets)
+    await begin_playback(chunks, user, message, open_sockets)
 
     byte_string = b"".join(chunks)
     buffer = BytesIO(byte_string)
     audio_length = MP3(buffer).info.length
-    await asyncio.sleep(audio_length + 3)
+    await asyncio.sleep(audio_length + 1)
 
 
 async def broadcast_text(sockets, text: str):
@@ -149,11 +143,9 @@ async def broadcast_bytes(sockets, data):
         open_sockets.discard(socket)
 
 
-JSON_START = json.dumps({"type": "start"})
-JSON_END = json.dumps({"type": "end"})
-
-
-async def stream_mp3(mp3: list[bytes], sockets) -> None:
+async def begin_playback(mp3: list[bytes], user, message, sockets) -> None:
+    JSON_START = json.dumps({"type": "start", "user": user, "message": message})
+    JSON_END = json.dumps({"type": "end"})
     print("Starting audio broadcast...")
     try:
         await broadcast_text(sockets, JSON_START)
